@@ -1,0 +1,201 @@
+# =============================================================================
+# Agent Pack manifest — the pack's self-description.
+#
+# This file is the contract between the pack and the machine it lands on.
+# scripts/doctor.sh reads ONLY this file to decide whether a target host can
+# run the pack, so everything a host must provide is declared here.
+#
+# Nothing in this file is station-specific: it declares *which* variables and
+# ports are needed, never their values.
+# =============================================================================
+apiVersion: agentpack/v1
+kind: AgentPack
+
+metadata:
+  name: pnp-agents-mcp
+  version: 1.0.0
+  description: >-
+    Portable multi-agent pack: a bundled LiteLLM model gateway, a
+    transport-agnostic MCP tools server, and three configured agents
+    (researcher, coder, reviewer) behind an HTTP orchestrator.
+  maintainer: "${PACK_MAINTAINER:unset}"
+
+# --- Host compatibility ------------------------------------------------------
+compatibility:
+  min_runtime:
+    python: "3.11"
+    docker: "24.0"
+    docker_compose: "2.20"
+  arch:
+    - amd64
+    - arm64
+  os:
+    - linux
+  notes: >-
+    Compose >= 2.20 is required for `depends_on.<svc>.required: false`, which is
+    what makes the bundled gateway optional without editing compose.yaml.
+
+# --- Variables the host MUST provide ----------------------------------------
+# doctor.sh fails if any of these is unset or empty.
+required_env:
+  - name: GATEWAY_MASTER_KEY
+    description: Shared secret clients present to the model gateway.
+    secret: true
+    generate: "openssl rand -hex 24"
+
+# --- Variables required only under a condition ------------------------------
+# doctor.sh warns (does not fail) and checks the "at least one of" rule.
+conditional_env:
+  - group: provider_credentials
+    description: >-
+      At least one provider credential must be present, and every model alias
+      an enabled agent references must have its provider's key set.
+    at_least_one: true
+    members:
+      - name: OPENAI_API_KEY
+        secret: true
+        enables_aliases: [gpt-4o, gpt-4o-mini]
+      - name: ANTHROPIC_API_KEY
+        secret: true
+        enables_aliases: [claude-sonnet, claude-haiku]
+      - name: GEMINI_API_KEY
+        secret: true
+        enables_aliases: [gemini-pro, gemini-flash]
+      - name: OPENROUTER_API_KEY
+        secret: true
+        enables_aliases: [openrouter-deepseek]
+      - name: OLLAMA_BASE_URL
+        secret: false
+        enables_aliases: [local-llama]
+  - group: search_backend
+    description: >-
+      Required only when SEARCH_PROVIDER is tavily or brave. The searxng
+      provider needs SEARCH_BASE_URL instead of a key.
+    at_least_one: false
+    members:
+      - name: SEARCH_API_KEY
+        secret: true
+        required_if: "SEARCH_PROVIDER in (tavily, brave)"
+      - name: SEARCH_BASE_URL
+        secret: false
+        required_if: "SEARCH_PROVIDER == searxng"
+
+# --- Variables with defaults -------------------------------------------------
+# Listed so operators can discover every knob without reading the code.
+optional_env:
+  - {name: STATION,                   default: local,            description: Station overlay to load from env/}
+  - {name: LOG_LEVEL,                 default: info,             description: "debug|info|warning|error"}
+  - {name: LOG_FORMAT,                default: json,             description: "json|text"}
+  - {name: GATEWAY_PROFILE,           default: bundled,          description: "bundled|external — external skips the gateway container"}
+  - {name: GATEWAY_BASE_URL,          default: "",               description: External gateway URL; empty derives it from host/port}
+  - {name: GATEWAY_HOST,              default: gateway,          description: Hostname clients use to reach the gateway}
+  - {name: GATEWAY_PORT,              default: "4000",           description: Gateway listen port}
+  - {name: GATEWAY_BIND_HOST,         default: 127.0.0.1,        description: Host interface the gateway port publishes on}
+  - {name: GATEWAY_ENABLED_ALIASES,   default: "",               description: Comma-separated alias allowlist; empty serves all}
+  - {name: MCP_TRANSPORT,             default: stdio,            description: "stdio|http"}
+  - {name: MCP_HOST,                  default: localhost,        description: Hostname clients use to reach the MCP server}
+  - {name: TOOLS_SERVER_PORT,         default: "8081",           description: MCP tools server listen port (http transport)}
+  - {name: TOOLS_SERVER_BIND_HOST,    default: 127.0.0.1,        description: Host interface the MCP port publishes on}
+  - {name: ORCHESTRATOR_PORT,         default: "8080",           description: Orchestrator HTTP port}
+  - {name: ORCHESTRATOR_BIND_HOST,    default: 127.0.0.1,        description: Host interface the orchestrator port publishes on}
+  - {name: SEARCH_PROVIDER,           default: none,             description: "tavily|brave|searxng|none"}
+  - {name: SHELL_ENABLED,             default: "true",           description: Master switch for run_shell_safe}
+  - {name: SHELL_ALLOWLIST,           default: "echo,ls,cat,pwd,whoami,date,uname,df,uptime", description: Allowlisted binaries}
+  - {name: SHELL_TIMEOUT_SECONDS,     default: "15",             description: Hard timeout per shell invocation}
+  - {name: RESEARCHER_MODEL_ALIAS,    default: claude-sonnet,    description: Gateway alias for the researcher agent}
+  - {name: CODER_MODEL_ALIAS,         default: gpt-4o,           description: Gateway alias for the coder agent}
+  - {name: REVIEWER_MODEL_ALIAS,      default: claude-haiku,     description: Gateway alias for the reviewer agent}
+  - {name: PYTHON_IMAGE,              default: "python:3.12-slim", description: Base image for all built services}
+  - {name: IMAGE_PREFIX,              default: pnp-agents-mcp,   description: Image name prefix}
+  - {name: IMAGE_TAG,                 default: "1.0.0",          description: Image tag}
+
+# --- Ports the pack listens on ----------------------------------------------
+# doctor.sh checks each of these is free on the target host before deploy.
+ports:
+  - name: gateway
+    service: gateway
+    env: GATEWAY_PORT
+    default: 4000
+    protocol: tcp
+    health_path: /health/liveliness
+    required: false          # not published when GATEWAY_PROFILE=external
+  - name: tools-server
+    service: tools-server
+    env: TOOLS_SERVER_PORT
+    default: 8081
+    protocol: tcp
+    health_path: /health
+    required: false          # not published when MCP_TRANSPORT=stdio
+  - name: orchestrator
+    service: orchestrator
+    env: ORCHESTRATOR_PORT
+    default: 8080
+    protocol: tcp
+    health_path: /health
+    required: true
+
+# --- Resource envelope -------------------------------------------------------
+# Advisory for capacity planning; enforced by compose.yaml deploy.resources.
+resources:
+  total:
+    cpu: "2.5"
+    memory: 2560Mi
+    disk: 2Gi
+  per_service:
+    gateway:
+      cpu: "1.0"
+      memory: 1024Mi
+      env_cpu: GATEWAY_CPUS
+      env_memory: GATEWAY_MEMORY
+    tools-server:
+      cpu: "0.5"
+      memory: 512Mi
+      env_cpu: TOOLS_SERVER_CPUS
+      env_memory: TOOLS_SERVER_MEMORY
+    orchestrator:
+      cpu: "1.0"
+      memory: 1024Mi
+      env_cpu: ORCHESTRATOR_CPUS
+      env_memory: ORCHESTRATOR_MEMORY
+
+# --- What this pack provides to the outside world ---------------------------
+provides:
+  capabilities:
+    - id: gateway.openai_compatible
+      description: OpenAI-compatible /v1/chat/completions endpoint fronting all aliases.
+      transport: http
+      service: gateway
+    - id: mcp.tool.search_web
+      description: Web search via a pluggable backend (tavily/brave/searxng).
+      transport: [stdio, http]
+      service: tools-server
+    - id: mcp.tool.get_weather
+      description: Current conditions and forecast for a named location.
+      transport: [stdio, http]
+      service: tools-server
+    - id: mcp.tool.run_shell_safe
+      description: Allowlisted, non-shell, timed command execution.
+      transport: [stdio, http]
+      service: tools-server
+    - id: agent.researcher
+      description: Gathers and synthesizes external information; JSON output contract.
+      service: orchestrator
+    - id: agent.coder
+      description: Produces and edits code as structured patches; JSON output contract.
+      service: orchestrator
+    - id: agent.reviewer
+      description: Audits another agent's output against a rubric; JSON output contract.
+      service: orchestrator
+  model_aliases:
+    - gpt-4o
+    - gpt-4o-mini
+    - claude-sonnet
+    - claude-haiku
+    - gemini-pro
+    - gemini-flash
+    - local-llama
+    - openrouter-deepseek
+  endpoints:
+    - {service: orchestrator, path: /health,  method: GET,  description: Liveness plus per-agent wiring status}
+    - {service: orchestrator, path: /agents,  method: GET,  description: Enabled agents and their resolved aliases}
+    - {service: orchestrator, path: /run,     method: POST, description: Execute one agent turn with MCP tool access}

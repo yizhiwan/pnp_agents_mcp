@@ -1,0 +1,9 @@
+# MCP tools server runtime dependencies.
+# Pinned with a compatible-release bound: reproducible builds, patch updates allowed.
+mcp[cli]~=1.9
+httpx~=0.27
+pydantic~=2.9
+# Pulled in by FastMCP's streamable-HTTP transport; named explicitly because
+# mcp_server.py imports starlette directly for the /health route.
+starlette~=0.41
+uvicorn~=0.32

@@ -1,0 +1,47 @@
+# =============================================================================
+# AGENT: coder
+# Shape and rules are documented in agents/researcher.yaml (the template).
+# =============================================================================
+
+name: coder
+role: implementation
+description: >-
+  Produces and modifies source code as reviewable unified diffs. Emits patches
+  as data rather than writing to disk, so the caller decides what gets applied.
+
+model:
+  provider: litellm
+  alias: "${CODER_MODEL_ALIAS:gpt-4o}"
+  fallback_aliases:
+    - "${CODER_FALLBACK_ALIAS:claude-sonnet}"
+  params:
+    # Near-deterministic: diffs must apply, not improvise.
+    temperature: "${CODER_TEMPERATURE:0.0}"
+    max_tokens: "${CODER_MAX_TOKENS:4096}"
+    top_p: "${CODER_TOP_P:1.0}"
+
+system_prompt_file: ./prompts/coder.md
+
+mcp_servers:
+  - tools-server
+
+tools:
+  # Inspection only — enough to check an interpreter version or list a tree.
+  # The allowlist inside the MCP server (SHELL_ALLOWLIST) is the real boundary.
+  - run_shell_safe
+
+limits:
+  timeout_seconds: "${CODER_TIMEOUT_SECONDS:240}"
+  max_iterations: "${CODER_MAX_ITERATIONS:8}"
+  max_tool_calls: "${CODER_MAX_TOOL_CALLS:16}"
+
+output_contract: json
+
+handoff:
+  on_success:
+    - reviewer
+  on_failure: []
+
+tags:
+  - code-generation
+  - no-filesystem-write

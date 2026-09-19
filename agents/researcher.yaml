@@ -1,0 +1,65 @@
+# =============================================================================
+# AGENT: researcher            — TEMPLATE for every other agent in this pack
+#
+# Copy this file to agents/<name>.yaml, change `name`/`role`/prompt/tools, then
+# add <name> to `agents.enabled` in config/base.yaml (or your station overlay).
+#
+# Contract enforced by config/schema.json ($defs.agent):
+#   required: name, role, model, system_prompt_file, mcp_servers, tools,
+#             limits, output_contract
+#
+# Portability rules:
+#   * `model.alias` is a LiteLLM alias from gateway/litellm_config.yaml — NEVER
+#     a provider model ID. Changing providers is a gateway edit, not an agent edit.
+#   * every tunable is "${VAR:default}" so one file serves every station
+#   * `system_prompt_file` is relative to the pack root
+#   * `tools` is an allowlist: a tool absent here is not offered to the model,
+#     even if the MCP server exposes it
+# =============================================================================
+
+name: researcher
+role: research
+description: >-
+  Gathers external information, cross-checks it across sources, and returns a
+  synthesized answer with explicit citations and a stated confidence level.
+  Read-only by design: it is granted no code-writing or mutating tools.
+
+model:
+  provider: litellm
+  # Alias, not a model ID. Must exist in gateway/litellm_config.yaml.
+  alias: "${RESEARCHER_MODEL_ALIAS:claude-sonnet}"
+  # Tried in order if the primary alias errors or is rate-limited.
+  fallback_aliases:
+    - "${RESEARCHER_FALLBACK_ALIAS:gpt-4o-mini}"
+  params:
+    # Low temperature: research should be reproducible, not creative.
+    temperature: "${RESEARCHER_TEMPERATURE:0.1}"
+    max_tokens: "${RESEARCHER_MAX_TOKENS:2048}"
+    top_p: "${RESEARCHER_TOP_P:1.0}"
+
+system_prompt_file: ./prompts/researcher.md
+
+mcp_servers:
+  - tools-server
+
+tools:
+  - search_web
+  - get_weather
+
+limits:
+  timeout_seconds: "${RESEARCHER_TIMEOUT_SECONDS:180}"
+  max_iterations: "${RESEARCHER_MAX_ITERATIONS:6}"
+  max_tool_calls: "${RESEARCHER_MAX_TOOL_CALLS:12}"
+
+# The orchestrator parses the model's final message as JSON and rejects the turn
+# if it does not parse. The prompt file declares the exact shape.
+output_contract: json
+
+handoff:
+  on_success:
+    - reviewer
+  on_failure: []
+
+tags:
+  - read-only
+  - external-network

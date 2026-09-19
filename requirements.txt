@@ -1,0 +1,7 @@
+# Dependencies for the pack's host-side tooling: config_loader.py and the
+# scripts that call it. Each service has its own requirements file:
+#   mcp/tools-server/requirements.txt
+#   orchestrator/requirements.txt
+#   gateway/  (installed in gateway/Dockerfile)
+PyYAML~=6.0
+jsonschema~=4.23

@@ -1,0 +1,10 @@
+# Orchestrator runtime dependencies.
+fastapi~=0.115
+uvicorn[standard]~=0.32
+httpx~=0.27
+pydantic~=2.9
+# MCP client side (stdio + streamable HTTP transports).
+mcp[cli]~=1.9
+# Used by config_loader.py, which is imported from the read-only pack mount.
+PyYAML~=6.0
+jsonschema~=4.23

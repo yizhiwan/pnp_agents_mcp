@@ -1,0 +1,315 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentpack.local/schemas/pnp-agents-mcp/1.0.0",
+  "title": "Agent Pack merged configuration",
+  "description": "Validates the fully merged, substituted and derived configuration produced by config_loader.load_pack(). Applied AFTER ${VAR} substitution, so ports are integers and flags are booleans.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pack", "runtime", "gateway", "mcp", "agents", "orchestrator"],
+
+  "$defs": {
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535,
+      "description": "TCP port. Never hardcoded in the pack; always from ${VAR:default}."
+    },
+    "hostname": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$",
+      "description": "DNS name, container/service name, or a bind address."
+    },
+    "httpUrl": {
+      "type": "string",
+      "minLength": 8,
+      "pattern": "^https?://[^\\s]+$"
+    },
+    "urlPath": {
+      "type": "string",
+      "pattern": "^/[^\\s]*$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "not": { "pattern": "^(/|[A-Za-z]:[\\\\/])" },
+      "description": "Must be relative so the pack is location-independent."
+    },
+    "modelAlias": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$",
+      "description": "Alias defined in gateway/litellm_config.yaml, not a provider model ID."
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+    },
+    "envValue": {
+      "type": ["string", "integer", "number", "boolean"],
+      "description": "Scalar passed through to a child process environment."
+    },
+    "positiveNumber": { "type": "number", "exclusiveMinimum": 0 },
+    "positiveInteger": { "type": "integer", "minimum": 1 },
+
+    "modelParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "temperature": { "type": "number", "minimum": 0, "maximum": 2 },
+        "max_tokens": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+        "top_p": { "type": "number", "minimum": 0, "maximum": 1 },
+        "frequency_penalty": { "type": "number", "minimum": -2, "maximum": 2 },
+        "presence_penalty": { "type": "number", "minimum": -2, "maximum": 2 },
+        "stop": { "type": "array", "items": { "type": "string" }, "maxItems": 4 }
+      }
+    },
+    "agentLimits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeout_seconds": { "$ref": "#/$defs/positiveNumber" },
+        "max_iterations": { "type": "integer", "minimum": 1, "maximum": 50 },
+        "max_tool_calls": { "type": "integer", "minimum": 0, "maximum": 200 }
+      }
+    },
+
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "role", "model", "system_prompt", "mcp_servers", "tools", "limits", "output_contract"],
+      "properties": {
+        "name": { "$ref": "#/$defs/identifier" },
+        "role": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "description": { "type": "string", "maxLength": 1024 },
+        "model": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["provider", "alias"],
+          "properties": {
+            "provider": { "type": "string", "enum": ["litellm", "openai_compatible"] },
+            "alias": { "$ref": "#/$defs/modelAlias" },
+            "fallback_aliases": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/modelAlias" },
+              "maxItems": 5
+            },
+            "params": { "$ref": "#/$defs/modelParams" }
+          }
+        },
+        "system_prompt_file": { "$ref": "#/$defs/relativePath" },
+        "system_prompt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Derived: contents of system_prompt_file, inlined by the loader."
+        },
+        "mcp_servers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "uniqueItems": true
+        },
+        "tools": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_]*$" },
+          "uniqueItems": true,
+          "description": "Allowlist of MCP tool names this agent may call."
+        },
+        "limits": { "$ref": "#/$defs/agentLimits" },
+        "output_contract": { "type": "string", "enum": ["json", "text"] },
+        "handoff": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "on_success": { "type": "array", "items": { "$ref": "#/$defs/identifier" } },
+            "on_failure": { "type": "array", "items": { "$ref": "#/$defs/identifier" } }
+          }
+        },
+        "tags": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      }
+    },
+
+    "mcpServer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "transport", "tools", "timeout_seconds"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "transport": { "type": "string", "enum": ["stdio", "http"] },
+        "scheme": { "type": "string", "enum": ["http", "https"] },
+        "host": { "$ref": "#/$defs/hostname" },
+        "port": { "$ref": "#/$defs/port" },
+        "bind_host": { "$ref": "#/$defs/hostname" },
+        "mount_path": { "$ref": "#/$defs/urlPath" },
+        "health_path": { "$ref": "#/$defs/urlPath" },
+        "url": {
+          "type": "string",
+          "description": "Derived for http transport; empty string for stdio."
+        },
+        "command": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "cwd": { "$ref": "#/$defs/relativePath" },
+        "timeout_seconds": { "$ref": "#/$defs/positiveNumber" },
+        "tools": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_]*$" },
+          "uniqueItems": true
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/envValue" }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "transport": { "const": "http" } },
+            "required": ["transport"]
+          },
+          "then": {
+            "required": ["scheme", "host", "port", "mount_path", "health_path", "url"],
+            "properties": { "url": { "$ref": "#/$defs/httpUrl" } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "transport": { "const": "stdio" } },
+            "required": ["transport"]
+          },
+          "then": { "required": ["command", "cwd"] }
+        }
+      ]
+    }
+  },
+
+  "properties": {
+    "pack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "station"],
+      "properties": {
+        "name": { "$ref": "#/$defs/identifier" },
+        "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]+)?$" },
+        "station": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" }
+      }
+    },
+
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["log_level", "log_format", "request_timeout_seconds", "max_concurrency"],
+      "properties": {
+        "log_level": { "type": "string", "enum": ["debug", "info", "warning", "error", "critical"] },
+        "log_format": { "type": "string", "enum": ["json", "text"] },
+        "request_timeout_seconds": { "$ref": "#/$defs/positiveNumber" },
+        "max_concurrency": { "type": "integer", "minimum": 1, "maximum": 512 },
+        "retry": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["max_attempts", "backoff_seconds"],
+          "properties": {
+            "max_attempts": { "type": "integer", "minimum": 1, "maximum": 10 },
+            "backoff_seconds": { "$ref": "#/$defs/positiveNumber" }
+          }
+        }
+      }
+    },
+
+    "gateway": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile", "scheme", "host", "port", "base_url", "api_key",
+        "health_path", "chat_completions_path", "models_path",
+        "timeout_seconds", "config_file"
+      ],
+      "properties": {
+        "profile": { "type": "string", "enum": ["bundled", "external"] },
+        "scheme": { "type": "string", "enum": ["http", "https"] },
+        "host": { "$ref": "#/$defs/hostname" },
+        "port": { "$ref": "#/$defs/port" },
+        "base_url": { "$ref": "#/$defs/httpUrl" },
+        "api_key": {
+          "type": "string",
+          "minLength": 8,
+          "description": "From ${GATEWAY_MASTER_KEY}. Redacted in all log output."
+        },
+        "health_path": { "$ref": "#/$defs/urlPath" },
+        "chat_completions_path": { "$ref": "#/$defs/urlPath" },
+        "models_path": { "$ref": "#/$defs/urlPath" },
+        "timeout_seconds": { "$ref": "#/$defs/positiveNumber" },
+        "config_file": { "$ref": "#/$defs/relativePath" },
+        "enabled_aliases": {
+          "type": "string",
+          "description": "Comma-separated alias allowlist; empty means all declared aliases."
+        }
+      }
+    },
+
+    "mcp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["servers"],
+      "properties": {
+        "servers": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "pattern": "^[a-z0-9][a-z0-9-]*$" },
+          "additionalProperties": { "$ref": "#/$defs/mcpServer" }
+        }
+      }
+    },
+
+    "agents": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dir", "prompts_dir", "enabled", "defaults", "loaded"],
+      "properties": {
+        "dir": { "$ref": "#/$defs/relativePath" },
+        "prompts_dir": { "$ref": "#/$defs/relativePath" },
+        "enabled": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/identifier" },
+          "uniqueItems": true
+        },
+        "defaults": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["provider"],
+          "properties": {
+            "provider": { "type": "string", "enum": ["litellm", "openai_compatible"] },
+            "params": { "$ref": "#/$defs/modelParams" },
+            "limits": { "$ref": "#/$defs/agentLimits" }
+          }
+        },
+        "loaded": {
+          "type": "object",
+          "description": "Derived: one entry per enabled agent, merged with defaults and with its prompt inlined.",
+          "minProperties": 1,
+          "propertyNames": { "pattern": "^[a-z0-9][a-z0-9_-]*$" },
+          "additionalProperties": { "$ref": "#/$defs/agent" }
+        }
+      }
+    },
+
+    "orchestrator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bind_host", "port", "health_path", "gateway_wait_seconds"],
+      "properties": {
+        "bind_host": { "$ref": "#/$defs/hostname" },
+        "port": { "$ref": "#/$defs/port" },
+        "health_path": { "$ref": "#/$defs/urlPath" },
+        "gateway_wait_seconds": { "type": "number", "minimum": 0, "maximum": 3600 },
+        "cors_origins": { "type": "string" }
+      }
+    }
+  }
+}

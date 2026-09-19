@@ -1,0 +1,86 @@
+# =============================================================================
+# STATION OVERLAY — local workstation / single-host development
+#
+#   cp env/local.example.yaml env/local.yaml      # env/local.yaml is gitignored
+#   python config_loader.py --pack . --station local --dry-run
+#
+# This file is merged ON TOP OF config/base.yaml. Only override what differs;
+# every key omitted here keeps its base.yaml value. "${VAR:default}" still works
+# in this file — substitution happens after the merge.
+#
+# Local profile:
+#   * bundled gateway (no external dependency)
+#   * MCP over stdio — the orchestrator spawns the tools server directly, so
+#     no port is published and nothing needs to be running beforehand
+#   * loopback-only, verbose logging, small limits for fast feedback
+# =============================================================================
+
+pack:
+  station: local
+
+runtime:
+  log_level: "${LOG_LEVEL:debug}"
+  log_format: "${LOG_FORMAT:text}"
+  request_timeout_seconds: 60
+  max_concurrency: 2
+  retry:
+    max_attempts: 2
+    backoff_seconds: 1.0
+
+gateway:
+  profile: bundled
+  scheme: http
+  # On the host, the bundled gateway is reachable on loopback. Inside compose
+  # use GATEWAY_HOST=gateway (the service name) — that is the .env default.
+  host: "${GATEWAY_HOST:localhost}"
+  port: "${GATEWAY_PORT:4000}"
+  base_url: "${GATEWAY_BASE_URL:}"
+  api_key: "${GATEWAY_MASTER_KEY}"
+  timeout_seconds: 60
+  # Serve everything locally; trim this to speed up gateway boot.
+  enabled_aliases: "${GATEWAY_ENABLED_ALIASES:}"
+
+mcp:
+  servers:
+    tools-server:
+      enabled: true
+      # stdio needs no port, no container and no healthcheck.
+      transport: stdio
+      command:
+        - python
+        - -u
+        - mcp/tools-server/mcp_server.py
+      cwd: .
+      timeout_seconds: 30
+      env:
+        MCP_TRANSPORT: stdio
+        LOG_LEVEL: "${LOG_LEVEL:debug}"
+        LOG_FORMAT: "${LOG_FORMAT:text}"
+        # Leave SEARCH_PROVIDER=none until you add a key: search_web then
+        # returns a structured "not configured" error instead of failing.
+        SEARCH_PROVIDER: "${SEARCH_PROVIDER:none}"
+        SEARCH_API_KEY: "${SEARCH_API_KEY:}"
+        SEARCH_BASE_URL: "${SEARCH_BASE_URL:}"
+        SHELL_ENABLED: "${SHELL_ENABLED:true}"
+        SHELL_ALLOWLIST: "${SHELL_ALLOWLIST:echo,ls,cat,pwd,whoami,date,uname}"
+        SHELL_TIMEOUT_SECONDS: 10
+
+agents:
+  enabled:
+    - researcher
+    - coder
+    - reviewer
+  defaults:
+    provider: litellm
+    params:
+      temperature: "${AGENT_DEFAULT_TEMPERATURE:0.2}"
+      max_tokens: "${AGENT_DEFAULT_MAX_TOKENS:1024}"
+    limits:
+      timeout_seconds: 90
+      max_iterations: 4
+
+orchestrator:
+  bind_host: "${ORCHESTRATOR_BIND_ADDR:0.0.0.0}"
+  port: "${ORCHESTRATOR_PORT:8080}"
+  gateway_wait_seconds: 30
+  cors_origins: ""

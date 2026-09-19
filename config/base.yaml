@@ -1,0 +1,128 @@
+# =============================================================================
+# Pack-wide baseline configuration — STRUCTURE ONLY.
+#
+# Rules for this file:
+#   * Every station-variable value is "${VAR}" (required) or "${VAR:default}".
+#   * No IP literals other than universal bind addresses (0.0.0.0), no absolute
+#     paths, no API keys, no provider model IDs, no bare port numbers.
+#   * Paths are relative to the pack root so the pack works from any directory.
+#
+# Load order (later wins):  config/base.yaml -> env/<station>.yaml -> os.environ
+# See config_loader.py. Keys marked "derived" are computed by the loader and
+# must not be set by hand.
+# =============================================================================
+
+pack:
+  name: pnp-agents-mcp
+  version: 1.0.0
+  station: "${STATION:local}"
+
+# --- Cross-cutting runtime behaviour ----------------------------------------
+runtime:
+  log_level: "${LOG_LEVEL:info}"
+  log_format: "${LOG_FORMAT:json}"
+  request_timeout_seconds: "${REQUEST_TIMEOUT_SECONDS:120}"
+  max_concurrency: "${MAX_CONCURRENCY:4}"
+  retry:
+    max_attempts: "${RETRY_MAX_ATTEMPTS:3}"
+    backoff_seconds: "${RETRY_BACKOFF_SECONDS:1.5}"
+
+# --- Model gateway (LiteLLM) -------------------------------------------------
+# Agents never name a provider model; they name an alias served from here.
+gateway:
+  # bundled = run the gateway container from this pack.
+  # external = do not run it; point at an existing gateway via GATEWAY_BASE_URL.
+  profile: "${GATEWAY_PROFILE:bundled}"
+  scheme: "${GATEWAY_SCHEME:http}"
+  host: "${GATEWAY_HOST:gateway}"
+  port: "${GATEWAY_PORT:4000}"
+  # Leave empty to let the loader derive "<scheme>://<host>:<port>".
+  base_url: "${GATEWAY_BASE_URL:}"
+  api_key: "${GATEWAY_MASTER_KEY}"
+  health_path: "${GATEWAY_HEALTH_PATH:/health/liveliness}"
+  chat_completions_path: "${GATEWAY_CHAT_PATH:/v1/chat/completions}"
+  models_path: "${GATEWAY_MODELS_PATH:/v1/models}"
+  timeout_seconds: "${GATEWAY_TIMEOUT_SECONDS:120}"
+  config_file: ./gateway/litellm_config.yaml
+  # Comma-separated alias allowlist; empty means "serve every declared alias".
+  enabled_aliases: "${GATEWAY_ENABLED_ALIASES:}"
+
+# --- MCP servers -------------------------------------------------------------
+mcp:
+  servers:
+    tools-server:
+      enabled: "${TOOLS_SERVER_ENABLED:true}"
+      # stdio = loader/orchestrator spawns `command` as a subprocess.
+      # http  = connect to the streamable-HTTP endpoint at the derived url.
+      transport: "${MCP_TRANSPORT:stdio}"
+      scheme: "${MCP_SCHEME:http}"
+      host: "${MCP_HOST:localhost}"
+      port: "${TOOLS_SERVER_PORT:8081}"
+      # 0.0.0.0 is a universal bind-all address, not a station address.
+      bind_host: "${TOOLS_SERVER_BIND_ADDR:0.0.0.0}"
+      mount_path: "${MCP_MOUNT_PATH:/mcp}"
+      health_path: "${MCP_HEALTH_PATH:/health}"
+      # derived: "<scheme>://<host>:<port><mount_path>" when transport == http
+      url: ""
+      command:
+        - python
+        - -u
+        - mcp/tools-server/mcp_server.py
+      cwd: .
+      timeout_seconds: "${MCP_TIMEOUT_SECONDS:60}"
+      tools:
+        - search_web
+        - get_weather
+        - run_shell_safe
+      # Passed to the server process in stdio mode; mirrored by compose in http.
+      env:
+        MCP_TRANSPORT: "${MCP_TRANSPORT:stdio}"
+        MCP_SERVER_NAME: tools-server
+        MCP_BIND_HOST: "${TOOLS_SERVER_BIND_ADDR:0.0.0.0}"
+        MCP_PORT: "${TOOLS_SERVER_PORT:8081}"
+        MCP_MOUNT_PATH: "${MCP_MOUNT_PATH:/mcp}"
+        LOG_LEVEL: "${LOG_LEVEL:info}"
+        LOG_FORMAT: "${LOG_FORMAT:json}"
+        HTTP_TIMEOUT_SECONDS: "${HTTP_TIMEOUT_SECONDS:20}"
+        SEARCH_PROVIDER: "${SEARCH_PROVIDER:none}"
+        SEARCH_API_KEY: "${SEARCH_API_KEY:}"
+        SEARCH_BASE_URL: "${SEARCH_BASE_URL:}"
+        SEARCH_MAX_RESULTS: "${SEARCH_MAX_RESULTS:5}"
+        WEATHER_BASE_URL: "${WEATHER_BASE_URL:https://api.open-meteo.com/v1/forecast}"
+        GEOCODE_BASE_URL: "${GEOCODE_BASE_URL:https://geocoding-api.open-meteo.com/v1/search}"
+        SHELL_ENABLED: "${SHELL_ENABLED:true}"
+        SHELL_ALLOWLIST: "${SHELL_ALLOWLIST:echo,ls,cat,pwd,whoami,date,uname,df,uptime}"
+        SHELL_TIMEOUT_SECONDS: "${SHELL_TIMEOUT_SECONDS:15}"
+        SHELL_MAX_OUTPUT_BYTES: "${SHELL_MAX_OUTPUT_BYTES:65536}"
+
+# --- Agents ------------------------------------------------------------------
+# One YAML per agent under `dir`; `enabled` selects which ones load.
+agents:
+  dir: ./agents
+  prompts_dir: ./prompts
+  enabled:
+    - researcher
+    - coder
+    - reviewer
+  # Applied under each agent's own values (agent file wins).
+  defaults:
+    provider: litellm
+    params:
+      temperature: "${AGENT_DEFAULT_TEMPERATURE:0.2}"
+      max_tokens: "${AGENT_DEFAULT_MAX_TOKENS:2048}"
+      top_p: "${AGENT_DEFAULT_TOP_P:1.0}"
+    limits:
+      timeout_seconds: "${AGENT_DEFAULT_TIMEOUT_SECONDS:180}"
+      max_iterations: "${AGENT_DEFAULT_MAX_ITERATIONS:6}"
+  # derived: populated by config_loader from `dir`/<name>.yaml + prompt files.
+  loaded: {}
+
+# --- Orchestrator ------------------------------------------------------------
+orchestrator:
+  bind_host: "${ORCHESTRATOR_BIND_ADDR:0.0.0.0}"
+  port: "${ORCHESTRATOR_PORT:8080}"
+  health_path: "${ORCHESTRATOR_HEALTH_PATH:/health}"
+  # How long to wait for the gateway to answer its health probe at boot.
+  gateway_wait_seconds: "${GATEWAY_WAIT_SECONDS:60}"
+  # Comma-separated; empty disables cross-origin access entirely.
+  cors_origins: "${CORS_ORIGINS:}"

@@ -1,0 +1,37 @@
+# --- Station overlays: keep examples, ignore real ones -----------------------
+# Real overlays carry station-specific hosts/ports and must never be committed.
+env/*.yaml
+env/*.yml
+!env/*.example.yaml
+!env/*.example.yml
+
+# --- Secrets -----------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+!config/*.key.example
+
+# --- Build / packaging output ------------------------------------------------
+dist/
+build/
+*.tar.gz
+*.tgz
+
+# --- Python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Runtime ----------------------------------------------------------------
+*.log
+logs/
+.doctor-report.txt

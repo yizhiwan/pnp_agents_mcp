@@ -1,0 +1,123 @@
+# =============================================================================
+# LiteLLM proxy configuration — the pack's model gateway.
+#
+# This file is the ONE place where an alias is bound to a concrete provider
+# model. Agents only ever reference `model_name` (the alias), so swapping a
+# provider or model is a change here — never a change to an agent.
+#
+# Portability:
+#   * Every secret is `os.environ/VAR` — no key is ever written to this file.
+#   * Every provider model identifier is `os.environ/ALIAS_*_MODEL`, so a
+#     station can repoint an alias without editing any file. gateway/start.sh
+#     supplies the documented defaults when those vars are unset, which is why
+#     the pack runs unchanged out of the box.
+#   * `model_info.requires_env` tells start.sh which credentials an alias needs.
+#     Aliases whose credentials are absent are dropped at boot with a warning
+#     instead of failing at first request.
+#
+# Alias set: gpt-4o, gpt-4o-mini, claude-sonnet, claude-haiku, gemini-pro,
+#            gemini-flash, local-llama, openrouter-deepseek
+# =============================================================================
+
+model_list:
+  # --- OpenAI ---------------------------------------------------------------
+  - model_name: gpt-4o
+    litellm_params:
+      model: os.environ/ALIAS_GPT_4O_MODEL
+      api_key: os.environ/OPENAI_API_KEY
+    model_info:
+      mode: chat
+      supports_function_calling: true
+      requires_env: [OPENAI_API_KEY]
+
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: os.environ/ALIAS_GPT_4O_MINI_MODEL
+      api_key: os.environ/OPENAI_API_KEY
+    model_info:
+      mode: chat
+      supports_function_calling: true
+      requires_env: [OPENAI_API_KEY]
+
+  # --- Anthropic ------------------------------------------------------------
+  - model_name: claude-sonnet
+    litellm_params:
+      model: os.environ/ALIAS_CLAUDE_SONNET_MODEL
+      api_key: os.environ/ANTHROPIC_API_KEY
+    model_info:
+      mode: chat
+      supports_function_calling: true
+      requires_env: [ANTHROPIC_API_KEY]
+
+  - model_name: claude-haiku
+    litellm_params:
+      model: os.environ/ALIAS_CLAUDE_HAIKU_MODEL
+      api_key: os.environ/ANTHROPIC_API_KEY
+    model_info:
+      mode: chat
+      supports_function_calling: true
+      requires_env: [ANTHROPIC_API_KEY]
+
+  # --- Google Gemini --------------------------------------------------------
+  - model_name: gemini-pro
+    litellm_params:
+      model: os.environ/ALIAS_GEMINI_PRO_MODEL
+      api_key: os.environ/GEMINI_API_KEY
+    model_info:
+      mode: chat
+      supports_function_calling: true
+      requires_env: [GEMINI_API_KEY]
+
+  - model_name: gemini-flash
+    litellm_params:
+      model: os.environ/ALIAS_GEMINI_FLASH_MODEL
+      api_key: os.environ/GEMINI_API_KEY
+    model_info:
+      mode: chat
+      supports_function_calling: true
+      requires_env: [GEMINI_API_KEY]
+
+  # --- Local Ollama ---------------------------------------------------------
+  # No credential; needs a reachable Ollama server. Inside compose, the default
+  # OLLAMA_BASE_URL points at host.docker.internal (wired via extra_hosts).
+  - model_name: local-llama
+    litellm_params:
+      model: os.environ/ALIAS_LOCAL_LLAMA_MODEL
+      api_base: os.environ/OLLAMA_BASE_URL
+    model_info:
+      mode: chat
+      supports_function_calling: true
+      requires_env: [OLLAMA_BASE_URL]
+
+  # --- OpenRouter -----------------------------------------------------------
+  - model_name: openrouter-deepseek
+    litellm_params:
+      model: os.environ/ALIAS_OPENROUTER_DEEPSEEK_MODEL
+      api_key: os.environ/OPENROUTER_API_KEY
+      api_base: os.environ/OPENROUTER_BASE_URL
+    model_info:
+      mode: chat
+      supports_function_calling: true
+      requires_env: [OPENROUTER_API_KEY]
+
+# --- Proxy-wide settings -----------------------------------------------------
+general_settings:
+  master_key: os.environ/GATEWAY_MASTER_KEY
+  # Unauthenticated liveness/readiness probes so compose and deploy.sh can poll
+  # the gateway without holding the master key.
+  health_check_interval: 300
+
+litellm_settings:
+  drop_params: true              # silently drop params a provider rejects
+  set_verbose: false             # never log request bodies (they carry prompts)
+  request_timeout: 600
+  telemetry: false
+  json_logs: true
+  num_retries: 2
+
+router_settings:
+  routing_strategy: simple-shuffle
+  # Alias-level fallbacks. Agent-level fallbacks live in agents/*.yaml; these
+  # are the gateway's own safety net when a provider is down entirely.
+  allowed_fails: 3
+  cooldown_time: 30

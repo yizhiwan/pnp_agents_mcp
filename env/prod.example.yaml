@@ -1,0 +1,103 @@
+# =============================================================================
+# STATION OVERLAY — production / shared server / cluster node
+#
+#   cp env/prod.example.yaml env/prod.yaml        # env/prod.yaml is gitignored
+#   python config_loader.py --pack . --station prod --dry-run
+#   ./scripts/deploy.sh prod
+#
+# Merged ON TOP OF config/base.yaml. Nothing station-specific is hardcoded here
+# either — hosts and ports stay "${VAR:default}" so one prod.yaml can serve
+# several nodes that differ only in their exported environment.
+#
+# Production profile:
+#   * bundled gateway by default; set GATEWAY_PROFILE=external and
+#     GATEWAY_BASE_URL=https://gw.internal.example to use an existing gateway
+#   * MCP over streamable HTTP — the tools server is its own scalable service
+#     with a real healthcheck
+#   * structured JSON logs, higher concurrency, stricter shell allowlist
+# =============================================================================
+
+pack:
+  station: "${STATION:prod}"
+
+runtime:
+  log_level: "${LOG_LEVEL:info}"
+  log_format: json
+  request_timeout_seconds: "${REQUEST_TIMEOUT_SECONDS:180}"
+  max_concurrency: "${MAX_CONCURRENCY:16}"
+  retry:
+    max_attempts: "${RETRY_MAX_ATTEMPTS:4}"
+    backoff_seconds: "${RETRY_BACKOFF_SECONDS:2.0}"
+
+gateway:
+  # bundled = run it here; external = point at an existing one and skip the
+  # container (compose profile gate + GATEWAY_BASE_URL).
+  profile: "${GATEWAY_PROFILE:bundled}"
+  scheme: "${GATEWAY_SCHEME:http}"
+  host: "${GATEWAY_HOST:gateway}"
+  port: "${GATEWAY_PORT:4000}"
+  # Non-empty wins over scheme/host/port. Use this for an external gateway,
+  # e.g. GATEWAY_BASE_URL=https://gateway.internal.example
+  base_url: "${GATEWAY_BASE_URL:}"
+  api_key: "${GATEWAY_MASTER_KEY}"
+  timeout_seconds: "${GATEWAY_TIMEOUT_SECONDS:180}"
+  # Pin prod to the aliases you have quota and keys for; unlisted aliases are
+  # dropped at gateway start so a typo fails loudly instead of silently.
+  enabled_aliases: "${GATEWAY_ENABLED_ALIASES:gpt-4o,gpt-4o-mini,claude-sonnet,claude-haiku}"
+
+mcp:
+  servers:
+    tools-server:
+      enabled: "${TOOLS_SERVER_ENABLED:true}"
+      transport: http
+      scheme: "${MCP_SCHEME:http}"
+      # Service name inside the compose network; override for a remote node.
+      host: "${MCP_HOST:tools-server}"
+      port: "${TOOLS_SERVER_PORT:8081}"
+      bind_host: "${TOOLS_SERVER_BIND_ADDR:0.0.0.0}"
+      mount_path: "${MCP_MOUNT_PATH:/mcp}"
+      health_path: "${MCP_HEALTH_PATH:/health}"
+      timeout_seconds: "${MCP_TIMEOUT_SECONDS:90}"
+      tools:
+        - search_web
+        - get_weather
+        - run_shell_safe
+      env:
+        MCP_TRANSPORT: http
+        MCP_BIND_HOST: "${TOOLS_SERVER_BIND_ADDR:0.0.0.0}"
+        MCP_PORT: "${TOOLS_SERVER_PORT:8081}"
+        MCP_MOUNT_PATH: "${MCP_MOUNT_PATH:/mcp}"
+        LOG_LEVEL: "${LOG_LEVEL:info}"
+        LOG_FORMAT: json
+        HTTP_TIMEOUT_SECONDS: "${HTTP_TIMEOUT_SECONDS:30}"
+        SEARCH_PROVIDER: "${SEARCH_PROVIDER:tavily}"
+        SEARCH_API_KEY: "${SEARCH_API_KEY:}"
+        SEARCH_BASE_URL: "${SEARCH_BASE_URL:}"
+        SEARCH_MAX_RESULTS: "${SEARCH_MAX_RESULTS:8}"
+        # Tighter than base: no cat, no df — read-only introspection only.
+        SHELL_ENABLED: "${SHELL_ENABLED:true}"
+        SHELL_ALLOWLIST: "${SHELL_ALLOWLIST:echo,pwd,date,uname,uptime}"
+        SHELL_TIMEOUT_SECONDS: "${SHELL_TIMEOUT_SECONDS:10}"
+        SHELL_MAX_OUTPUT_BYTES: "${SHELL_MAX_OUTPUT_BYTES:32768}"
+
+agents:
+  enabled:
+    - researcher
+    - coder
+    - reviewer
+  defaults:
+    provider: litellm
+    params:
+      temperature: "${AGENT_DEFAULT_TEMPERATURE:0.1}"
+      max_tokens: "${AGENT_DEFAULT_MAX_TOKENS:4096}"
+    limits:
+      timeout_seconds: "${AGENT_DEFAULT_TIMEOUT_SECONDS:240}"
+      max_iterations: "${AGENT_DEFAULT_MAX_ITERATIONS:8}"
+
+orchestrator:
+  bind_host: "${ORCHESTRATOR_BIND_ADDR:0.0.0.0}"
+  port: "${ORCHESTRATOR_PORT:8080}"
+  health_path: "${ORCHESTRATOR_HEALTH_PATH:/health}"
+  gateway_wait_seconds: "${GATEWAY_WAIT_SECONDS:120}"
+  # Set explicitly for browser clients, e.g. "https://console.internal.example"
+  cors_origins: "${CORS_ORIGINS:}"

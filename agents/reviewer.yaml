@@ -1,0 +1,49 @@
+# =============================================================================
+# AGENT: reviewer
+# Shape and rules are documented in agents/researcher.yaml (the template).
+# =============================================================================
+
+name: reviewer
+role: review
+description: >-
+  Audits another agent's output against a fixed rubric and returns a verdict
+  with per-issue severity. Deliberately runs on a cheaper alias than the agents
+  it reviews, and is granted no tools so its verdict depends only on the
+  artifact it was handed.
+
+model:
+  provider: litellm
+  alias: "${REVIEWER_MODEL_ALIAS:claude-haiku}"
+  fallback_aliases:
+    - "${REVIEWER_FALLBACK_ALIAS:gpt-4o-mini}"
+  params:
+    # Zero temperature: the same artifact must get the same verdict twice.
+    temperature: "${REVIEWER_TEMPERATURE:0.0}"
+    max_tokens: "${REVIEWER_MAX_TOKENS:1536}"
+    top_p: "${REVIEWER_TOP_P:1.0}"
+
+system_prompt_file: ./prompts/reviewer.md
+
+# Declared so the wiring is explicit and auditable, but `tools` is empty:
+# the reviewer judges the artifact it is given and cannot go fetch more context.
+mcp_servers:
+  - tools-server
+
+tools: []
+
+limits:
+  timeout_seconds: "${REVIEWER_TIMEOUT_SECONDS:120}"
+  max_iterations: "${REVIEWER_MAX_ITERATIONS:2}"
+  max_tool_calls: 0
+
+output_contract: json
+
+handoff:
+  on_success: []
+  on_failure:
+    - coder
+
+tags:
+  - judge
+  - no-tools
+  - deterministic
