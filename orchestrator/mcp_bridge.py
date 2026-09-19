@@ -38,23 +38,35 @@ async def open_session(
     """Open an initialized MCP session for one configured server."""
     transport = str(server.get("transport") or "stdio")
 
+    # The except-Exception blocks below wrap ONLY the connect/initialize steps,
+    # never the `yield`. If they wrapped the yield too, an exception raised by
+    # the CALLER's own code (e.g. the orchestrator's gateway-call failure) would
+    # be thrown into this generator at the yield point, get caught by the same
+    # broad except, and get relabeled as a misleading "server unreachable"
+    # McpBridgeError — masking the caller's real, already-informative error
+    # (observed in testing: a clean 502 from a bad model alias turned into an
+    # opaque 500 this way). Setup failures are genuinely ours to translate;
+    # whatever the caller does with an open session is not.
     if transport == "http":
         url = str(server.get("url") or "")
         if not url:
             raise McpBridgeError(f"server '{name}' has http transport but no url")
-        try:
-            async with streamablehttp_client(url) as (read, write, _):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    LOG.info("mcp session open (http) name=%s url=%s", name, url)
-                    yield session
-        except McpBridgeError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - normalized for the caller
-            raise McpBridgeError(
-                f"server '{name}' unreachable over http at {url}: "
-                f"{type(exc).__name__}: {exc}"
-            ) from exc
+        async with AsyncExitStack() as setup_stack:
+            try:
+                read, write, _ = await setup_stack.enter_async_context(
+                    streamablehttp_client(url)
+                )
+                session = await setup_stack.enter_async_context(
+                    ClientSession(read, write)
+                )
+                await session.initialize()
+            except Exception as exc:  # noqa: BLE001 - normalized for the caller
+                raise McpBridgeError(
+                    f"server '{name}' unreachable over http at {url}: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            LOG.info("mcp session open (http) name=%s url=%s", name, url)
+            yield session
         return
 
     command = list(server.get("command") or [])
@@ -68,20 +80,19 @@ async def open_session(
         env=env or None,
         cwd=str(cwd),
     )
-    try:
-        async with stdio_client(params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                LOG.info("mcp session open (stdio) name=%s command=%s",
-                         name, " ".join(command))
-                yield session
-    except McpBridgeError:
-        raise
-    except Exception as exc:  # noqa: BLE001 - normalized for the caller
-        raise McpBridgeError(
-            f"server '{name}' failed to start via stdio ({' '.join(command)}): "
-            f"{type(exc).__name__}: {exc}"
-        ) from exc
+    async with AsyncExitStack() as setup_stack:
+        try:
+            read, write = await setup_stack.enter_async_context(stdio_client(params))
+            session = await setup_stack.enter_async_context(ClientSession(read, write))
+            await session.initialize()
+        except Exception as exc:  # noqa: BLE001 - normalized for the caller
+            raise McpBridgeError(
+                f"server '{name}' failed to start via stdio ({' '.join(command)}): "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+        LOG.info("mcp session open (stdio) name=%s command=%s",
+                 name, " ".join(command))
+        yield session
 
 
 class ToolRouter:

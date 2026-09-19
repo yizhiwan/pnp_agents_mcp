@@ -370,6 +370,17 @@ async def run(request: RunRequest) -> RunResponse:
     iterations = 0
     alias_used = aliases[0]
 
+    # `pending_error` lets an error found inside the stack be RAISED after the
+    # stack has exited cleanly, instead of propagating through it directly.
+    # Propagating an exception through an open MCP session's teardown was
+    # observed to corrupt it: the session's underlying anyio task group treats
+    # the in-flight exception plus its own background-task cleanup as multiple
+    # failures and raises an ExceptionGroup instead, which loses the original
+    # HTTPException and reaches the client as an opaque 500. Capturing the
+    # error and exiting the stack without an active exception avoids that
+    # entirely — the stack always sees a clean exit.
+    pending_error: HTTPException | None = None
+
     async with AsyncExitStack() as stack:
         router: ToolRouter | None = None
         wanted_tools = agent.get("tools") or []
@@ -383,107 +394,117 @@ async def run(request: RunRequest) -> RunResponse:
                     wanted_tools,
                 )
             except McpBridgeError as exc:
-                raise HTTPException(
+                pending_error = HTTPException(
                     status_code=503,
                     detail={"error": "mcp_unavailable", "agent": request.agent,
                             "detail": str(exc)},
-                ) from exc
+                )
 
-        tool_schemas = router.schemas if router else []
+        if pending_error is None:
+            tool_schemas = router.schemas if router else []
 
-        for iteration in range(1, max_iterations + 1):
-            iterations = iteration
+            try:
+                for iteration in range(1, max_iterations + 1):
+                    iterations = iteration
 
-            payload: dict[str, Any] | None = None
-            last_error: HTTPException | None = None
-            for alias in aliases:
-                try:
-                    payload = await _chat(alias, messages, tool_schemas, params, timeout)
-                    alias_used = alias
-                    break
-                except HTTPException as exc:
-                    LOG.warning("alias failed alias=%s agent=%s detail=%s",
-                                alias, request.agent, exc.detail)
-                    last_error = exc
-            if payload is None:
-                raise last_error or HTTPException(
-                    status_code=502, detail={"error": "all_aliases_failed",
-                                             "aliases": aliases})
+                    payload: dict[str, Any] | None = None
+                    last_error: HTTPException | None = None
+                    for alias in aliases:
+                        try:
+                            payload = await _chat(alias, messages, tool_schemas,
+                                                  params, timeout)
+                            alias_used = alias
+                            break
+                        except HTTPException as exc:
+                            LOG.warning("alias failed alias=%s agent=%s detail=%s",
+                                        alias, request.agent, exc.detail)
+                            last_error = exc
+                    if payload is None:
+                        raise last_error or HTTPException(
+                            status_code=502, detail={"error": "all_aliases_failed",
+                                                     "aliases": aliases})
 
-            choices = payload.get("choices") or []
-            if not choices:
-                raise HTTPException(status_code=502,
-                                    detail={"error": "empty_gateway_response",
-                                            "alias": alias_used})
-            message = choices[0].get("message") or {}
-            tool_calls = message.get("tool_calls") or []
+                    choices = payload.get("choices") or []
+                    if not choices:
+                        raise HTTPException(status_code=502,
+                                            detail={"error": "empty_gateway_response",
+                                                    "alias": alias_used})
+                    message = choices[0].get("message") or {}
+                    tool_calls = message.get("tool_calls") or []
 
-            if not tool_calls:
-                final_text = message.get("content") or ""
-                break
+                    if not tool_calls:
+                        final_text = message.get("content") or ""
+                        break
 
-            messages.append({
-                "role": "assistant",
-                "content": message.get("content") or "",
-                "tool_calls": tool_calls,
-            })
-
-            for call in tool_calls:
-                function = call.get("function") or {}
-                name = str(function.get("name") or "")
-                if max_tool_calls and len(records) >= max_tool_calls:
-                    result = json.dumps({
-                        "ok": False, "data": None,
-                        "error": {"code": "budget_exhausted",
-                                  "message": f"tool-call budget of {max_tool_calls} "
-                                             f"is exhausted; answer with what you have",
-                                  "details": None},
+                    messages.append({
+                        "role": "assistant",
+                        "content": message.get("content") or "",
+                        "tool_calls": tool_calls,
                     })
-                else:
-                    try:
-                        arguments = json.loads(function.get("arguments") or "{}")
-                        if not isinstance(arguments, dict):
-                            raise ValueError("arguments must be a JSON object")
-                    except (json.JSONDecodeError, ValueError) as exc:
-                        result = json.dumps({
-                            "ok": False, "data": None,
-                            "error": {"code": "bad_arguments",
-                                      "message": f"could not parse arguments: {exc}",
-                                      "details": None},
-                        })
-                        arguments = {}
-                    else:
-                        result = (
-                            await router.call(name, arguments) if router
-                            else json.dumps({
+
+                    for call in tool_calls:
+                        function = call.get("function") or {}
+                        name = str(function.get("name") or "")
+                        if max_tool_calls and len(records) >= max_tool_calls:
+                            result = json.dumps({
                                 "ok": False, "data": None,
-                                "error": {"code": "no_tools",
-                                          "message": "this agent has no tools",
+                                "error": {"code": "budget_exhausted",
+                                          "message": f"tool-call budget of "
+                                                     f"{max_tool_calls} is exhausted; "
+                                                     f"answer with what you have",
                                           "details": None},
                             })
-                        )
+                        else:
+                            try:
+                                arguments = json.loads(function.get("arguments") or "{}")
+                                if not isinstance(arguments, dict):
+                                    raise ValueError("arguments must be a JSON object")
+                            except (json.JSONDecodeError, ValueError) as exc:
+                                result = json.dumps({
+                                    "ok": False, "data": None,
+                                    "error": {"code": "bad_arguments",
+                                              "message": f"could not parse "
+                                                         f"arguments: {exc}",
+                                              "details": None},
+                                })
+                                arguments = {}
+                            else:
+                                result = (
+                                    await router.call(name, arguments) if router
+                                    else json.dumps({
+                                        "ok": False, "data": None,
+                                        "error": {"code": "no_tools",
+                                                  "message": "this agent has no tools",
+                                                  "details": None},
+                                    })
+                                )
 
-                parsed_ok = True
-                try:
-                    parsed_ok = bool(json.loads(result).get("ok", True))
-                except (json.JSONDecodeError, AttributeError):
-                    parsed_ok = True
-                records.append(ToolCallRecord(
-                    iteration=iteration,
-                    tool=name,
-                    arguments=arguments if isinstance(arguments, dict) else {},
-                    ok=parsed_ok,
-                    result_preview=result[:500],
-                ))
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": call.get("id"),
-                    "name": name,
-                    "content": result,
-                })
-        else:
-            # Loop exhausted without a tool-free answer.
-            final_text = final_text or ""
+                        parsed_ok = True
+                        try:
+                            parsed_ok = bool(json.loads(result).get("ok", True))
+                        except (json.JSONDecodeError, AttributeError):
+                            parsed_ok = True
+                        records.append(ToolCallRecord(
+                            iteration=iteration,
+                            tool=name,
+                            arguments=arguments if isinstance(arguments, dict) else {},
+                            ok=parsed_ok,
+                            result_preview=result[:500],
+                        ))
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": call.get("id"),
+                            "name": name,
+                            "content": result,
+                        })
+                else:
+                    # Loop exhausted without a tool-free answer.
+                    final_text = final_text or ""
+            except HTTPException as exc:
+                pending_error = exc
+
+    if pending_error is not None:
+        raise pending_error
 
     payload_out, satisfied, contract_error = _enforce_contract(final_text, contract)
     if not final_text:
