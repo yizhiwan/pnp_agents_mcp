@@ -35,3 +35,6 @@ htmlcov/
 *.log
 logs/
 .doctor-report.txt
+
+# --- Local tooling state -----------------------------------------------------
+.claude/
